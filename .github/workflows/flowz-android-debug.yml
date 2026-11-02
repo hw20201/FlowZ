@@ -31,15 +31,16 @@ jobs:
           SDKMGR="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMGR" ]; then SDKMGR="/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager"; fi
           yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
-          "$SDKMGR" "ndk;28.2.13676358" "platforms;android-36" "build-tools;36.0.0"
+          "$SDKMGR" "ndk;28.0.13004108" "platforms;android-36" "build-tools;36.0.0"
 
       - name: Build libbox.aar from sing-box v1.14.4
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
         run: |
           git clone --depth 1 --branch v1.14.4 https://github.com/SagerNet/sing-box.git /tmp/sing-box
           cd /tmp/sing-box
-          go install github.com/sagernet/gomobile/cmd/gomobile
+          # build_shared.FindMobile looks for the gobind binary, not just
+          # gomobile: install both or the build dies with
+          # "missing gomobile installation".
+          go install github.com/sagernet/gomobile/cmd/gomobile github.com/sagernet/gomobile/cmd/gobind
           export PATH="$PATH:$HOME/go/bin"
           go run ./cmd/internal/build_libbox -debug
           mkdir -p "$GITHUB_WORKSPACE/android/app/libs"
