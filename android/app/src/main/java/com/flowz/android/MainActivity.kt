@@ -35,7 +35,7 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.StartActivityForResult()
                 ) { result ->
                     if (result.resultCode == Activity.RESULT_OK) {
-                        CoreState.startService(this)
+                        CoreState.startService(this@MainActivity)
                     }
                 }
                 Column(
@@ -67,12 +67,12 @@ class MainActivity : ComponentActivity() {
                         onClick = {
                             when (status) {
                                 HubState.CONNECTED, HubState.CONNECTING -> {
-                                    CoreState.stopService(this)
+                                    CoreState.stopService(this@MainActivity)
                                 }
                                 else -> {
-                                    val intent = VpnService.prepare(this)
+                                    val intent = VpnService.prepare(this@MainActivity)
                                     if (intent == null) {
-                                        CoreState.startService(this)
+                                        CoreState.startService(this@MainActivity)
                                     } else {
                                         launcher.launch(intent)
                                     }

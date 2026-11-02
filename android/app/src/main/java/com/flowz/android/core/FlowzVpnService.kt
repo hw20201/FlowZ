@@ -4,8 +4,6 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.util.Log
-import io.nekohasekai.libbox.AutoRedirectHandler
-import io.nekohasekai.libbox.AutoRedirectSession
 import io.nekohasekai.libbox.BridgeOptions
 import io.nekohasekai.libbox.BridgeSession
 import io.nekohasekai.libbox.CommandServer
@@ -277,10 +275,4 @@ class FlowzVpnService : VpnService(), CommandServerHandler, PlatformInterface {
 
     override fun createBridge(options: BridgeOptions): BridgeSession? = null
 
-    override fun usePlatformAutoRedirect(): Boolean = false
-
-    override fun createAutoRedirect(
-        options: ByteArray,
-        handler: AutoRedirectHandler
-    ): AutoRedirectSession? = null
 }
