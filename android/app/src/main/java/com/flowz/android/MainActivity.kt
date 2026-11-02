@@ -599,6 +599,14 @@ private fun SubscriptionCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray
             )
+            if (sub.nodes.isEmpty() && sub.diag != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    sub.diag!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onRefresh) { Text("更新节点") }

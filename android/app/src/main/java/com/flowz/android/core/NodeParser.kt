@@ -7,12 +7,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Generic proxy-link parsers (vless / vmess / trojan / shadowsocks /
- * hysteria2) producing sing-box outbound objects.
+ * Proxy subscription parsers: plain link lists, base64 link lists,
+ * sing-box JSON configs, JSON wrappers, and minimal Clash YAML.
  *
- * This file contains only parsing logic. It never holds, logs or
- * transmits any real node value; values live only in the user's
- * own subscription fetch on their device.
+ * Diagnostics only ever carry counts and format guesses, never any
+ * node value: the app must be able to say "0 nodes, why" without
+ * showing or storing a single server address, password or key.
  *
  * Node identity: stableTag() derives a tag from type + server + port
  * + credential, so a tag survives subscription refreshes that only
@@ -23,6 +23,20 @@ import org.json.JSONObject
 data class ParsedNode(
     val name: String,
     val outbound: JSONObject
+)
+
+data class ParseDiag(
+    val bytes: Int,
+    val lines: Int,
+    val matchedByScheme: Map<String, Int>,
+    val failed: Int,
+    val kind: String
+)
+
+data class ParseResult(
+    val nodes: List<ParsedNode>,
+    val failed: Int,
+    val diag: ParseDiag
 )
 
 object NodeParser {
@@ -38,32 +52,135 @@ object NodeParser {
         return "n" + (key.hashCode() and 0x7fffffff)
     }
 
-    fun parseSubscription(text: String): Pair<List<ParsedNode>, Int> {
-        val body = decodeIfBase64(text.trim())
+    fun parseSubscription(rawText: String): ParseResult {
+        var text = rawText.trim().removePrefix("\uFEFF")
+        // Whole-body URL encoding (some panels return %3A%2F%2F bodies).
+        if (text.contains("%3A", ignoreCase = true) && !text.contains("://")) {
+            try {
+                text = URLDecoder.decode(text, "UTF-8")
+            } catch (_: Exception) {
+            }
+        }
+        val bytes = text.length
+
+        // JSON config or JSON wrapper.
+        if (text.startsWith("{")) {
+            val jsonResult = tryJson(text, bytes)
+            if (jsonResult != null) return jsonResult
+        }
+        // JSON string wrapping a document.
+        if (text.startsWith("\"") && text.endsWith("\"") && text.length >= 2) {
+            try {
+                val inner = JSONObject("{\"v\":$text}").optString("v")
+                if (inner.isNotEmpty() && inner != text) {
+                    val r = parseSubscription(inner)
+                    if (r.nodes.isNotEmpty()) return r
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        // Minimal Clash YAML (proxies: list). Only used when it
+        // actually yields nodes; otherwise fall through to link parsing.
+        if (text.contains("proxies:")) {
+            val yamlNodes = parseClashYaml(text)
+            if (yamlNodes.isNotEmpty()) {
+                return ParseResult(
+                    yamlNodes, 0,
+                    ParseDiag(bytes, text.lines().count { it.isNotBlank() }, mapOf("yaml" to yamlNodes.size), 0, "Clash 订阅")
+                )
+            }
+        }
+
+        val decoded = decodeBase64Robust(text)
+        val body = decoded ?: text
+        val kind = if (decoded != null) "Base64 链接" else "链接列表"
+        return parseLinks(body, bytes, kind)
+    }
+
+    private fun tryJson(text: String, bytes: Int): ParseResult? {
+        val json = try {
+            JSONObject(text)
+        } catch (_: Exception) {
+            return null
+        }
+        // Full sing-box config: take its outbounds as nodes.
+        val outbounds = json.optJSONArray("outbounds")
+        if (outbounds != null && outbounds.length() > 0) {
+            val nodes = mutableListOf<ParsedNode>()
+            for (i in 0 until outbounds.length()) {
+                try {
+                    val obj = outbounds.getJSONObject(i)
+                    val type = obj.optString("type")
+                    if (type.isEmpty() || type == "selector" || type == "direct" || type == "block" || type == "dns") continue
+                    val server = obj.optString("server")
+                    val port = obj.optInt("server_port", 0)
+                    val name = obj.optString("tag").takeIf { it.isNotEmpty() }
+                        ?: if (server.isNotEmpty()) "$server:$port" else "节点"
+                    nodes.add(ParsedNode(name, obj))
+                } catch (_: Exception) {
+                }
+            }
+            if (nodes.isNotEmpty()) {
+                return ParseResult(
+                    nodes, 0,
+                    ParseDiag(bytes, 0, mapOf("json" to nodes.size), 0, "JSON 配置")
+                )
+            }
+        }
+        // Wrapper: a string field holding the real document.
+        for (key in listOf("data", "subscription", "content", "result", "sub", "config")) {
+            val inner = json.optString(key)
+            if (inner.isNotEmpty() && inner != text) {
+                val r = parseSubscription(inner)
+                if (r.nodes.isNotEmpty()) return r
+            }
+        }
+        return ParseResult(
+            emptyList(), 0,
+            ParseDiag(bytes, text.lines().count { it.isNotBlank() }, emptyMap(), 0, "JSON（未识别）")
+        )
+    }
+
+    private fun decodeBase64Robust(text: String): String? {
+        if (text.contains("://")) return null
+        val clean = text.replace("\\s".toRegex(), "")
+        if (clean.isEmpty()) return null
+        val padded = clean + "=".repeat((4 - clean.length % 4) % 4)
+        for (flags in listOf(Base64.URL_SAFE, Base64.DEFAULT)) {
+            try {
+                val decoded = String(Base64.decode(padded, flags), Charsets.UTF_8)
+                if (decoded.isNotEmpty()) return decoded
+            } catch (_: Exception) {
+            }
+        }
+        return null
+    }
+
+    private fun parseLinks(body: String, bytes: Int, kind: String): ParseResult {
         val nodes = mutableListOf<ParsedNode>()
+        val matched = mutableMapOf<String, Int>()
         var failed = 0
+        var lines = 0
         for (raw in body.lines()) {
             val line = raw.trim()
             if (line.isEmpty()) continue
+            lines++
             try {
-                val node = parseLink(line) ?: continue
-                nodes.add(node)
+                val node = parseLink(line)
+                if (node != null) {
+                    nodes.add(node)
+                    val scheme = line.substringBefore("://", "").lowercase()
+                    matched[scheme] = (matched[scheme] ?: 0) + 1
+                }
             } catch (_: Exception) {
                 failed++
             }
         }
-        return nodes to failed
-    }
-
-    private fun decodeIfBase64(text: String): String {
-        if (text.contains("://")) return text
-        return try {
-            val clean = text.replace("\\s".toRegex(), "")
-            val padded = clean + "=".repeat((4 - clean.length % 4) % 4)
-            String(Base64.decode(padded, Base64.URL_SAFE), Charsets.UTF_8)
-        } catch (_: Exception) {
-            text
-        }
+        return ParseResult(
+            nodes, failed,
+            ParseDiag(bytes, lines, matched, failed, kind)
+        )
     }
 
     fun parseLink(line: String): ParsedNode? {
@@ -106,7 +223,7 @@ object NodeParser {
      * - fp -> uTLS fingerprint (NOT a certificate fingerprint).
      * - insecure -> skip certificate verification (per-node field).
      */
-    private fun tlsObject(
+    internal fun tlsObject(
         security: String?,
         sni: String?,
         host: String,
@@ -142,7 +259,7 @@ object NodeParser {
         }
     }
 
-    private fun transportObject(
+    internal fun transportObject(
         type: String?,
         host: String?,
         path: String?,
@@ -324,5 +441,128 @@ object NodeParser {
             }
         }
         return ParsedNode(nameOf(uri, "$host:$port"), out)
+    }
+
+    // ---- Minimal Clash YAML (proxies: list only) ----
+
+    private fun putKv(map: MutableMap<String, String>, s: String) {
+        val i = s.indexOf(':')
+        if (i < 0) return
+        val k = s.substring(0, i).trim()
+        var v = s.substring(i + 1).trim()
+        if (v.length >= 2 && ((v.startsWith("\"") && v.endsWith("\"")) || (v.startsWith("'") && v.endsWith("'")))) {
+            v = v.substring(1, v.length - 1)
+        }
+        if (k.isNotEmpty()) map[k] = v
+    }
+
+    private fun parseClashYaml(text: String): List<ParsedNode> {
+        val blocks = mutableListOf<Map<String, String>>()
+        var cur: MutableMap<String, String>? = null
+        var inProxies = false
+        for (raw in text.lines()) {
+            val line = raw.trimEnd()
+            val t = line.trim()
+            if (t == "proxies:") {
+                inProxies = true
+                continue
+            }
+            if (!inProxies) continue
+            if (t.isNotEmpty() && !line.startsWith(" ") && !line.startsWith("\t")) {
+                // A new top-level section ends the proxies list.
+                if (!t.startsWith("-")) {
+                    inProxies = false
+                    continue
+                }
+            }
+            if (t.startsWith("- ")) {
+                cur = mutableMapOf()
+                blocks.add(cur)
+                val rest = t.removePrefix("- ").trim()
+                if (rest.isNotEmpty()) putKv(cur, rest)
+            } else if (cur != null && t.contains(":")) {
+                putKv(cur, t)
+            }
+        }
+        val nodes = mutableListOf<ParsedNode>()
+        for (b in blocks) {
+            try {
+                yamlBlockToNode(b)?.let { nodes.add(it) }
+            } catch (_: Exception) {
+            }
+        }
+        return nodes
+    }
+
+    private fun yamlBlockToNode(b: Map<String, String>): ParsedNode? {
+        val type = b["type"]?.lowercase() ?: return null
+        val server = b["server"]?.takeIf { it.isNotEmpty() } ?: return null
+        val port = b["port"]?.toIntOrNull() ?: return null
+        val name = b["name"]?.takeIf { it.isNotEmpty() } ?: "$server:$port"
+        val tlsOn = b["tls"] == "true"
+        val sni = b["sni"] ?: b["servername"]
+        val insecure = b["skip-cert-verify"] == "true"
+        val out = JSONObject()
+        when (type) {
+            "ss", "shadowsocks" -> {
+                out.put("type", "shadowsocks")
+                out.put("server", server)
+                out.put("server_port", port)
+                out.put("method", b["cipher"] ?: "aes-256-gcm")
+                out.put("password", b["password"] ?: "")
+            }
+            "vmess" -> {
+                out.put("type", "vmess")
+                out.put("server", server)
+                out.put("server_port", port)
+                out.put("uuid", b["uuid"] ?: "")
+                out.put("security", b["cipher"] ?: "auto")
+                out.put("alter_id", b["alterId"]?.toIntOrNull() ?: 0)
+                if (tlsOn) {
+                    tlsObject("tls", sni, server, b["alpn"], null, insecure)?.let { out.put("tls", it) }
+                }
+                val net = b["network"]
+                if (net == "ws") {
+                    transportObject("ws", b["Host"], b["ws-path"], null)?.let { out.put("transport", it) }
+                } else if (net == "grpc") {
+                    transportObject("grpc", null, null, b["grpc-service-name"])?.let { out.put("transport", it) }
+                }
+            }
+            "trojan" -> {
+                out.put("type", "trojan")
+                out.put("server", server)
+                out.put("server_port", port)
+                out.put("password", b["password"] ?: "")
+                tlsObject("tls", sni, server, b["alpn"], null, insecure)?.let { out.put("tls", it) }
+                val net = b["network"]
+                if (net == "ws") {
+                    transportObject("ws", b["Host"], b["ws-path"], null)?.let { out.put("transport", it) }
+                } else if (net == "grpc") {
+                    transportObject("grpc", null, null, b["grpc-service-name"])?.let { out.put("transport", it) }
+                }
+            }
+            "vless" -> {
+                out.put("type", "vless")
+                out.put("server", server)
+                out.put("server_port", port)
+                out.put("uuid", b["uuid"] ?: "")
+                val flow = b["flow"]
+                if (!flow.isNullOrEmpty() && flow != "none") out.put("flow", flow)
+                val reality = b["reality-opts"] != null || b["public-key"] != null
+                tlsObject(
+                    if (tlsOn) (if (reality) "reality" else "tls") else null,
+                    sni, server, b["alpn"], b["client-fingerprint"], insecure,
+                    b["public-key"], b["short-id"]
+                )?.let { out.put("tls", it) }
+                val net = b["network"]
+                if (net == "ws") {
+                    transportObject("ws", b["Host"], b["ws-path"], null)?.let { out.put("transport", it) }
+                } else if (net == "grpc") {
+                    transportObject("grpc", null, null, b["grpc-service-name"])?.let { out.put("transport", it) }
+                }
+            }
+            else -> return null
+        }
+        return ParsedNode(name, out)
     }
 }

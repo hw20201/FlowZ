@@ -27,7 +27,8 @@ object SubscriptionManager {
     data class SubResult(
         val nodes: List<ParsedNode>,
         val failed: Int,
-        val traffic: TrafficInfo?
+        val traffic: TrafficInfo?,
+        val diag: ParseDiag
     )
 
     fun fetch(url: String, timeoutMs: Int = 15000): SubResult {
@@ -46,8 +47,8 @@ object SubscriptionManager {
             }
             val traffic = parseUserinfo(conn.getHeaderField("subscription-userinfo"))
             val text = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
-            val (nodes, failed) = NodeParser.parseSubscription(text)
-            return SubResult(nodes, failed, traffic)
+            val result = NodeParser.parseSubscription(text)
+            return SubResult(result.nodes, result.failed, traffic, result.diag)
         } finally {
             conn.disconnect()
         }

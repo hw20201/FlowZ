@@ -56,6 +56,18 @@ object CoreState {
 
     private val ioScope = CoroutineScope(Dispatchers.IO)
 
+    private fun diagSummary(result: SubscriptionManager.SubResult): String {
+        val d = result.diag
+        val matched = if (d.matchedByScheme.isEmpty()) {
+            "匹配 0 条"
+        } else {
+            "匹配 " + d.matchedByScheme.entries.joinToString(" / ") { it.key + " " + it.value }
+        }
+        return "解析：" + d.bytes + " 字节 · " + d.lines + " 行 · " + matched +
+            " · 格式：" + d.kind +
+            if (result.failed > 0) " · " + result.failed + " 条失败" else ""
+    }
+
     fun setStatus(state: HubState, reason: String = "") {
         _status.value = state
         _failureReason.value = reason
@@ -159,12 +171,17 @@ object CoreState {
                             url = trimmed,
                             updatedAt = System.currentTimeMillis(),
                             traffic = result.traffic,
-                            nodes = result.nodes
+                            nodes = result.nodes,
+                            diag = diagSummary(result)
                         )
                     )
                 }
-                _message.value = "订阅新增 ${result.nodes.size} 个节点" +
-                    if (result.failed > 0) "，${result.failed} 个解析失败" else ""
+                _message.value = if (result.nodes.isEmpty()) {
+                    "订阅拉到了，但一条节点都没解析出来（" + diagSummary(result) + "）"
+                } else {
+                    "订阅新增 ${result.nodes.size} 个节点" +
+                        if (result.failed > 0) "，${result.failed} 个解析失败" else ""
+                }
             } catch (e: Exception) {
                 _message.value = "订阅拉取失败：${e.message ?: "未知错误"}"
             } finally {
@@ -185,13 +202,18 @@ object CoreState {
                         updated[index] = sub.copy(
                             updatedAt = System.currentTimeMillis(),
                             traffic = result.traffic,
-                            nodes = result.nodes
+                            nodes = result.nodes,
+                            diag = diagSummary(result)
                         )
                     }
                     state.copy(subscriptions = updated)
                 }
-                _message.value = "订阅已更新：${result.nodes.size} 个节点" +
-                    if (result.failed > 0) "，${result.failed} 个解析失败" else ""
+                _message.value = if (result.nodes.isEmpty()) {
+                    "订阅拉到了，但一条节点都没解析出来（" + diagSummary(result) + "）"
+                } else {
+                    "订阅已更新：${result.nodes.size} 个节点" +
+                        if (result.failed > 0) "，${result.failed} 个解析失败" else ""
+                }
             } catch (e: Exception) {
                 _message.value = "订阅更新失败：${e.message ?: "未知错误"}"
             } finally {

@@ -15,7 +15,8 @@ data class SubEntry(
     val url: String,
     val updatedAt: Long,
     val traffic: SubscriptionManager.TrafficInfo?,
-    val nodes: List<ParsedNode>
+    val nodes: List<ParsedNode>,
+    val diag: String? = null
 )
 
 data class DisplayNode(
@@ -71,7 +72,8 @@ object SelectionStore {
                         url = s.optString("url"),
                         updatedAt = s.optLong("updatedAt"),
                         traffic = traffic,
-                        nodes = nodes
+                        nodes = nodes,
+                        diag = s.optString("diag").takeIf { it.isNotEmpty() }
                     )
                 )
             }
@@ -118,6 +120,7 @@ object SelectionStore {
                                 })
                             }
                         })
+                        s.diag?.let { put("diag", it) }
                     })
                 }
             })
