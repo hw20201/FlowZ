@@ -117,7 +117,7 @@ object SelectionStore {
                                     put("outbound", n.outbound.toString())
                                 })
                             }
-                        }
+                        })
                     })
                 }
             })
