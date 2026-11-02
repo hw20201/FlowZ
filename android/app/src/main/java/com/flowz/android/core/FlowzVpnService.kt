@@ -85,8 +85,8 @@ class FlowzVpnService : VpnService(), CommandServerHandler, PlatformInterface {
                         workingPath = filesDir.resolve("box").absolutePath
                         tempPath = cacheDir.resolve("box").absolutePath
                         fixAndroidStack = true
-                        appVersion = "0.2"
-                        appMarketingVersion = "0.2"
+                        appVersion = "0.3"
+                        appMarketingVersion = "0.3"
                     }
                 )
                 setupDone = true

@@ -54,6 +54,26 @@ object CoreState {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
+    private val _upHistory = MutableStateFlow<List<Long>>(emptyList())
+    val upHistory: StateFlow<List<Long>> = _upHistory
+
+    private val _downHistory = MutableStateFlow<List<Long>>(emptyList())
+    val downHistory: StateFlow<List<Long>> = _downHistory
+
+    private val _upTotal = MutableStateFlow(0L)
+    val upTotal: StateFlow<Long> = _upTotal
+
+    private val _downTotal = MutableStateFlow(0L)
+    val downTotal: StateFlow<Long> = _downTotal
+
+    private val _delays = MutableStateFlow<Map<String, DelayInfo>>(emptyMap())
+    val delays: StateFlow<Map<String, DelayInfo>> = _delays
+
+    private val _delayBusy = MutableStateFlow(false)
+    val delayBusy: StateFlow<Boolean> = _delayBusy
+
+    private var lastTrafficAt = 0L
+
     private val ioScope = CoroutineScope(Dispatchers.IO)
 
     private fun diagSummary(result: SubscriptionManager.SubResult): String {
@@ -73,6 +93,11 @@ object CoreState {
         _failureReason.value = reason
         if (state == HubState.CONNECTED) {
             _connectedSince.value = System.currentTimeMillis()
+            _upHistory.value = emptyList()
+            _downHistory.value = emptyList()
+            _upTotal.value = 0L
+            _downTotal.value = 0L
+            lastTrafficAt = 0L
         } else if (state == HubState.IDLE || state == HubState.FAILED) {
             _connectedSince.value = null
         }
@@ -80,6 +105,17 @@ object CoreState {
 
     fun onTraffic(t: TrafficPoller.Traffic) {
         _traffic.value = t
+        _upHistory.value = (_upHistory.value + t.upBps).takeLast(30)
+        _downHistory.value = (_downHistory.value + t.downBps).takeLast(30)
+        val now = System.currentTimeMillis()
+        if (lastTrafficAt > 0) {
+            val dt = (now - lastTrafficAt) / 1000.0
+            if (dt > 0) {
+                _upTotal.value += (t.upBps * dt).toLong()
+                _downTotal.value += (t.downBps * dt).toLong()
+            }
+        }
+        lastTrafficAt = now
     }
 
     fun onTick(now: Long) {
@@ -259,6 +295,69 @@ object CoreState {
             state.copy(manual = updated)
         }
         _message.value = "手动节点已删除"
+    }
+
+    // Delay test (via the loopback clash API)
+    enum class DelayState { UNTESTED, TESTING, OK, FAILED }
+    data class DelayInfo(val state: DelayState, val ms: Long = 0)
+
+    private fun fetchDelay(tag: String, timeoutMs: Int): DelayInfo {
+        return try {
+            val url = java.net.URL(
+                "http://127.0.0.1:9090/proxies/" + tag + "/delay?url=" +
+                    java.net.URLEncoder.encode("http://www.gstatic.com/generate_204", "UTF-8") +
+                    "&timeout=" + timeoutMs
+            )
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = timeoutMs + 1000
+            conn.readTimeout = timeoutMs + 1000
+            conn.requestMethod = "GET"
+            if (conn.responseCode == 200) {
+                val body = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
+                val ms = org.json.JSONObject(body).optLong("delay", -1)
+                if (ms >= 0) DelayInfo(DelayState.OK, ms) else DelayInfo(DelayState.FAILED)
+            } else {
+                DelayInfo(DelayState.FAILED)
+            }
+        } catch (e: Exception) {
+            DelayInfo(DelayState.FAILED)
+        }
+    }
+
+    private fun setDelay(tag: String, info: DelayInfo) {
+        _delays.value = _delays.value + (tag to info)
+    }
+
+    fun testDelay(tag: String) {
+        if (_status.value != HubState.CONNECTED) {
+            _message.value = "连接后才能测速"
+            return
+        }
+        ioScope.launch {
+            setDelay(tag, DelayInfo(DelayState.TESTING))
+            setDelay(tag, fetchDelay(tag, 5000))
+        }
+    }
+
+    fun testAllDelays() {
+        if (_status.value != HubState.CONNECTED) {
+            _message.value = "连接后才能测速"
+            return
+        }
+        if (_delayBusy.value) return
+        ioScope.launch {
+            _delayBusy.value = true
+            try {
+                for (node in nodes.value) {
+                    if (_status.value != HubState.CONNECTED) break
+                    setDelay(node.tag, DelayInfo(DelayState.TESTING))
+                    setDelay(node.tag, fetchDelay(node.tag, 3000))
+                    kotlinx.coroutines.delay(100)
+                }
+            } finally {
+                _delayBusy.value = false
+            }
+        }
     }
 
     fun clearMessage() {

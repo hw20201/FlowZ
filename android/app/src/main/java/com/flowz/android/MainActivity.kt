@@ -7,7 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,16 +28,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -48,21 +47,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.flowz.android.core.ConfigBuilder
 import com.flowz.android.core.CoreState
 import com.flowz.android.core.DisplayNode
 import com.flowz.android.core.HubState
 import com.flowz.android.core.SubEntry
-import java.text.SimpleDateFormat
-import java.util.Date
+import com.flowz.android.core.TrafficPoller
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 private val Teal = Color(0xFF0E98A4)
-private val TealLight = Color(0xFFE0F2F3)
-private val StopRed = Color(0xFFD32F2F)
+private val Green = Color(0xFF2E7D32)
+private val Orange = Color(0xFFEF6C00)
+private val Red = Color(0xFFD32F2F)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -78,292 +83,335 @@ class MainActivity : ComponentActivity() {
                 ) { result ->
                     if (result.resultCode == Activity.RESULT_OK) {
                         CoreState.startService(this@MainActivity)
+                    } else {
+                        CoreState.setStatus(HubState.IDLE)
                     }
                 }
                 var tab by remember { mutableStateOf(0) }
-                Scaffold(
-                    bottomBar = {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            TextButton(onClick = { tab = 0 }) {
-                                Text(
-                                    "主页",
-                                    color = if (tab == 0) Teal else Color.Gray
-                                )
-                            }
-                            TextButton(onClick = { tab = 1 }) {
-                                Text(
-                                    "节点",
-                                    color = if (tab == 1) Teal else Color.Gray
-                                )
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    FlowzApp(
+                        tab = tab,
+                        onTab = { tab = it },
+                        onConnectClick = {
+                            CoreState.setStatus(HubState.CONNECTING)
+                            val intent = VpnService.prepare(this@MainActivity)
+                            if (intent != null) {
+                                launcher.launch(intent)
+                            } else {
+                                CoreState.startService(this@MainActivity)
                             }
                         }
-                    }
-                ) { padding ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                    ) {
-                        if (tab == 0) {
-                            HomeScreen(
-                                onConnectClick = {
-                                    val intent = VpnService.prepare(this@MainActivity)
-                                    if (intent == null) {
-                                        CoreState.startService(this@MainActivity)
-                                    } else {
-                                        launcher.launch(intent)
-                                    }
-                                }
-                            )
-                        } else {
-                            NodesScreen()
-                        }
-                    }
+                    )
                 }
             }
         }
     }
 }
 
-private fun formatRate(bps: Long): String {
-    return when {
-        bps < 1024 -> "$bps B/s"
-        bps < 1024 * 1024 -> String.format(Locale.US, "%.1f KB/s", bps / 1024.0)
-        else -> String.format(Locale.US, "%.2f MB/s", bps / (1024.0 * 1024.0))
-    }
-}
-
-private fun formatBytes(bytes: Long): String {
-    return when {
-        bytes < 1024 * 1024 -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
-        bytes < 1024 * 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
-        else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
-    }
-}
-
-private fun formatDuration(sinceMs: Long, nowMs: Long): String {
-    val secs = ((nowMs - sinceMs) / 1000).coerceAtLeast(0L)
-    val mm = secs / 60
-    val ss = secs % 60
-    return String.format(Locale.US, "%02d:%02d", mm, ss)
-}
-
-private fun formatDate(epochMs: Long): String {
-    if (epochMs <= 0L) return ""
-    return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(epochMs))
-}
-
-private fun formatDateTime(epochMs: Long): String {
-    if (epochMs <= 0L) return ""
-    return SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(epochMs))
-}
-
 @Composable
-private fun ProtocolPill(text: String) {
-    Box(
-        modifier = Modifier
-            .background(TealLight, RoundedCornerShape(4.dp))
-            .padding(horizontal = 6.dp, vertical = 2.dp)
-    ) {
-        Text(text.uppercase(Locale.US), color = Teal, style = MaterialTheme.typography.labelSmall)
-    }
-}
-
-@Composable
-private fun HomeScreen(onConnectClick: () -> Unit) {
+private fun FlowzApp(
+    tab: Int,
+    onTab: (Int) -> Unit,
+    onConnectClick: () -> Unit
+) {
     val ctx = LocalContext.current
     val status by CoreState.status.collectAsState()
-    val reason by CoreState.failureReason.collectAsState()
+    val failureReason by CoreState.failureReason.collectAsState()
+    val traffic by CoreState.traffic.collectAsState()
     val nodes by CoreState.nodes.collectAsState()
     val selectedTag by CoreState.selectedTag.collectAsState()
     val mode by CoreState.mode.collectAsState()
-    val traffic by CoreState.traffic.collectAsState()
+    val message by CoreState.message.collectAsState()
     val connectedSince by CoreState.connectedSince.collectAsState()
-    val nowTick by CoreState.nowTick.collectAsState()
-    val selected = nodes.firstOrNull { it.tag == selectedTag }
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            CoreState.onTick(now)
+            delay(1000)
+        }
+    }
+
+    val currentNode = nodes.firstOrNull { it.tag == selectedTag }
+
+    Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            if (tab == 0) {
+                HomeScreen(
+                    status = status,
+                    failureReason = failureReason,
+                    currentNode = currentNode,
+                    mode = mode,
+                    traffic = traffic,
+                    connectedSince = connectedSince,
+                    now = now,
+                    connectEnabled = nodes.isNotEmpty() && selectedTag != null,
+                    onConnectClick = onConnectClick,
+                    onStopClick = { CoreState.stopService(ctx) },
+                    onModeClick = { CoreState.setMode(ctx, it) }
+                )
+            } else {
+                NodesScreen()
+            }
+            if (message != null) {
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(message!!, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { CoreState.clearMessage() }) { Text("知道了") }
+                }
+            }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            TextButton(onClick = { onTab(0) }) {
+                Text("主页", color = if (tab == 0) Teal else Color.Gray)
+            }
+            TextButton(onClick = { onTab(1) }) {
+                Text("节点", color = if (tab == 1) Teal else Color.Gray)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeScreen(
+    status: HubState,
+    failureReason: String,
+    currentNode: DisplayNode?,
+    mode: ConfigBuilder.Mode,
+    traffic: TrafficPoller.Traffic,
+    connectedSince: Long?,
+    now: Long,
+    connectEnabled: Boolean,
+    onConnectClick: () -> Unit,
+    onStopClick: () -> Unit,
+    onModeClick: (ConfigBuilder.Mode) -> Unit
+) {
+    val upHistory by CoreState.upHistory.collectAsState()
+    val downHistory by CoreState.downHistory.collectAsState()
+    val upTotal by CoreState.upTotal.collectAsState()
+    val downTotal by CoreState.downTotal.collectAsState()
+
+    val pillText = when (status) {
+        HubState.CONNECTED -> "已连接"
+        HubState.CONNECTING -> "连接中…"
+        HubState.IDLE -> "未连接"
+        HubState.FAILED -> "连接失败"
+    }
+    val pillColor = when (status) {
+        HubState.CONNECTED -> Green
+        HubState.CONNECTING -> Teal
+        HubState.IDLE -> Color.Gray
+        HubState.FAILED -> Red
+    }
+    val running = status == HubState.CONNECTED || status == HubState.CONNECTING
+
+    // Status card: FlClash-style big card + FlowZ teal
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("主页", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                "TUN · " + if (mode == ConfigBuilder.Mode.DIRECT) "直连" else "全局",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.Gray
-            )
-        }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFE0E0E0))
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("出口节点", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                Spacer(Modifier.height(8.dp))
-                if (selected != null) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .background(
-                                    if (status == HubState.CONNECTED) Color(0xFF2E7D32) else Color.Gray,
-                                    CircleShape
-                                )
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        ProtocolPill(selected.type)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            selected.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("未测", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        selected.transport + " · " + selected.source,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
-                    )
-                } else {
-                    Text("还没有节点，去节点页添加订阅或手动节点")
-                }
-            }
-        }
-
-        if (status == HubState.FAILED && reason.isNotEmpty()) {
-            Text("连接失败：$reason", color = StopRed, style = MaterialTheme.typography.bodyMedium)
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (status == HubState.CONNECTED || status == HubState.CONNECTING) {
-                Button(
-                    onClick = { CoreState.stopService(ctx) },
-                    colors = ButtonDefaults.buttonColors(containerColor = StopRed),
-                    shape = CircleShape,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(if (status == HubState.CONNECTING) "连接中…" else "停止")
-                }
-            } else {
-                Button(
-                    onClick = onConnectClick,
-                    enabled = nodes.isNotEmpty(),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(if (status == HubState.FAILED) "重试" else "连接")
-                }
-            }
-        }
-
-        Column {
-            Text("分流策略", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                val globalSelected = mode != ConfigBuilder.Mode.DIRECT
-                if (globalSelected) {
-                    Button(
-                        onClick = {},
-                        colors = ButtonDefaults.buttonColors(containerColor = Teal)
-                    ) { Text("全局") }
-                } else {
-                    OutlinedButton(onClick = { CoreState.setMode(ctx, ConfigBuilder.Mode.GLOBAL) }) {
-                        Text("全局")
-                    }
-                }
-                if (!globalSelected) {
-                    Button(
-                        onClick = {},
-                        colors = ButtonDefaults.buttonColors(containerColor = Teal)
-                    ) { Text("直连") }
-                } else {
-                    OutlinedButton(onClick = { CoreState.setMode(ctx, ConfigBuilder.Mode.DIRECT) }) {
-                        Text("直连")
-                    }
-                }
-            }
-            Text(
-                "智能分流等规则来了再开",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.Gray
-            )
-        }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFE0E0E0))
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .background(
-                                if (status == HubState.CONNECTED) Color(0xFF2E7D32) else Color.Gray,
-                                CircleShape
-                            )
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        when (status) {
-                            HubState.CONNECTED -> "已连接"
-                            HubState.CONNECTING -> "连接中"
-                            HubState.FAILED -> "连接失败"
-                            HubState.IDLE -> "未连接"
-                        }
-                    )
-                    if (selected != null && status == HubState.CONNECTED) {
+                        Modifier
+                            .background(pillColor, RoundedCornerShape(12.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(pillText, color = Color.White, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (connectedSince != null) {
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            selected.name,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            formatDuration(now - connectedSince),
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.Gray
                         )
                     }
                 }
-                Column(horizontalAlignment = Alignment.End) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    currentNode?.name ?: "还没有节点",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(4.dp))
+                if (currentNode != null) {
                     Text(
-                        "↓ " + formatRate(traffic.downBps) + "  ↑ " + formatRate(traffic.upBps),
-                        style = MaterialTheme.typography.bodySmall
+                        currentNode.type.uppercase(Locale.US) + " · " + currentNode.transport + " · " + currentNode.source,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.Gray
                     )
-                    val runtime = if (connectedSince != null) {
-                        "运行 " + formatDuration(connectedSince!!, nowTick) + " · " + traffic.count + " 连接"
-                    } else {
-                        traffic.count.toString() + " 连接"
-                    }
-                    Text(runtime, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                } else {
+                    Text(
+                        "去节点页添加订阅或手动节点",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.Gray
+                    )
                 }
             }
+            Spacer(Modifier.width(12.dp))
+            val btnColor = if (running) Red else if (connectEnabled) Teal else Color.Gray
+            val btnModifier = if (running || connectEnabled) {
+                Modifier
+                    .size(72.dp)
+                    .background(btnColor, CircleShape)
+                    .clickable {
+                        if (running) onStopClick() else onConnectClick()
+                    }
+            } else {
+                Modifier
+                    .size(72.dp)
+                    .background(btnColor, CircleShape)
+            }
+            Box(btnModifier, contentAlignment = Alignment.Center) {
+                Text(
+                    if (running) "⏸" else "▶",
+                    color = Color.White,
+                    fontSize = 28.sp
+                )
+            }
         }
+    }
+
+    if (status == HubState.FAILED && failureReason.isNotEmpty()) {
+        Spacer(Modifier.height(12.dp))
+        Text(failureReason, style = MaterialTheme.typography.bodyMedium, color = Red)
+    }
+
+    Spacer(Modifier.height(16.dp))
+
+    // Speed cards with sparklines (FlClash)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        SpeedCard(
+            label = "↑ 上传",
+            rate = formatRate(traffic.upBps),
+            total = "累计 " + formatBytes(upTotal),
+            points = upHistory,
+            color = Orange,
+            modifier = Modifier.weight(1f)
+        )
+        SpeedCard(
+            label = "↓ 下载",
+            rate = formatRate(traffic.downBps),
+            total = "累计 " + formatBytes(downTotal),
+            points = downHistory,
+            color = Teal,
+            modifier = Modifier.weight(1f)
+        )
+    }
+
+    Spacer(Modifier.height(16.dp))
+
+    // Mode pill bar (FlClash three-segment, FlowZ names)
+    Text("分流模式", style = MaterialTheme.typography.titleMedium)
+    Spacer(Modifier.height(8.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ModeSegment("全局", mode == ConfigBuilder.Mode.GLOBAL, Modifier.weight(1f)) {
+            onModeClick(ConfigBuilder.Mode.GLOBAL)
+        }
+        ModeSegment("直连", mode == ConfigBuilder.Mode.DIRECT, Modifier.weight(1f)) {
+            onModeClick(ConfigBuilder.Mode.DIRECT)
+        }
+        OutlinedButton(
+            onClick = {},
+            enabled = false,
+            modifier = Modifier.weight(1f)
+        ) {
+            Text("智能 · 后排")
+        }
+    }
+
+    Spacer(Modifier.height(16.dp))
+
+    // Bottom status strip (FlowZ)
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Text(
+            statusLine(status, currentNode, traffic, connectedSince, now),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(16.dp)
+        )
+    }
+}
+
+@Composable
+private fun ModeSegment(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    if (selected) {
+        Button(onClick = onClick, modifier = modifier) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick, modifier = modifier) { Text(label) }
+    }
+}
+
+@Composable
+private fun SpeedCard(
+    label: String,
+    rate: String,
+    total: String,
+    points: List<Long>,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier,
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+            Spacer(Modifier.height(4.dp))
+            Text(rate, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(2.dp))
+            Text(total, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Spacer(Modifier.height(8.dp))
+            Sparkline(points, color)
+        }
+    }
+}
+
+@Composable
+private fun Sparkline(points: List<Long>, color: Color) {
+    Canvas(Modifier.fillMaxWidth().height(32.dp)) {
+        if (points.size < 2) return@Canvas
+        val max = (points.maxOrNull() ?: 0L).coerceAtLeast(1L).toFloat()
+        val stepX = size.width / (points.size - 1)
+        val path = Path()
+        points.forEachIndexed { i, v ->
+            val x = i * stepX
+            val y = size.height - (v.toFloat() / max) * size.height * 0.85f - size.height * 0.05f
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        drawPath(
+            path,
+            color,
+            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
     }
 }
 
@@ -373,185 +421,121 @@ private fun NodesScreen() {
     val subs by CoreState.subscriptions.collectAsState()
     val nodes by CoreState.nodes.collectAsState()
     val selectedTag by CoreState.selectedTag.collectAsState()
+    val status by CoreState.status.collectAsState()
     val busy by CoreState.busy.collectAsState()
-    val message by CoreState.message.collectAsState()
+    val delays by CoreState.delays.collectAsState()
+    val delayBusy by CoreState.delayBusy.collectAsState()
     var subUrl by remember { mutableStateOf("") }
     var manualLink by remember { mutableStateOf("") }
     var query by remember { mutableStateOf("") }
     var protoFilter by remember { mutableStateOf("全部") }
-    var sortByName by remember { mutableStateOf(false) }
+    var sortAsc by remember { mutableStateOf(true) }
 
-    val filtered = nodes.filter { n ->
-        (protoFilter == "全部" || n.type.equals(protoFilter, ignoreCase = true)) &&
-            (query.isEmpty() || n.name.contains(query, ignoreCase = true))
-    }.let { list ->
-        if (sortByName) list.sortedBy { it.name } else list
+    Text("订阅", style = MaterialTheme.typography.titleMedium)
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = subUrl,
+        onValueChange = { subUrl = it },
+        label = { Text("订阅链接") },
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(8.dp))
+    Button(
+        onClick = {
+            CoreState.addSubscription(ctx, subUrl)
+            subUrl = ""
+        },
+        enabled = busy == null && subUrl.isNotBlank()
+    ) {
+        Text("添加订阅")
+    }
+    Spacer(Modifier.height(12.dp))
+    for ((index, sub) in subs.withIndex()) {
+        SubscriptionCard(
+            sub = sub,
+            onRefresh = { CoreState.refreshSubscription(ctx, index) },
+            onDelete = { CoreState.deleteSubscription(ctx, index) },
+            busy = busy != null
+        )
+        Spacer(Modifier.height(8.dp))
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
+    Spacer(Modifier.height(16.dp))
+    Text("手动添加", style = MaterialTheme.typography.titleMedium)
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = manualLink,
+        onValueChange = { manualLink = it },
+        label = { Text("节点链接（vless/vmess/trojan/ss/hy2）") },
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(8.dp))
+    Button(
+        onClick = {
+            CoreState.addManualNode(ctx, manualLink)
+            manualLink = ""
+        },
+        enabled = busy == null && manualLink.isNotBlank()
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        Text("添加节点")
+    }
+
+    Spacer(Modifier.height(16.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("节点", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.weight(1f))
+        OutlinedButton(
+            onClick = { CoreState.testAllDelays() },
+            enabled = status == HubState.CONNECTED && !delayBusy
         ) {
-            Text("节点", style = MaterialTheme.typography.headlineSmall)
-            Text("共 " + nodes.size + " 个", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text(if (delayBusy) "测速中…" else "全部测速")
         }
-        Spacer(Modifier.height(8.dp))
-        if (busy != null) {
-            Text(busy!!, style = MaterialTheme.typography.bodySmall, color = Teal)
-            Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.width(8.dp))
+        OutlinedButton(onClick = { sortAsc = !sortAsc }) {
+            Text(if (sortAsc) "名称 ↑" else "名称 ↓")
         }
-        if (message != null) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    message!!,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f)
-                )
-                TextButton(onClick = { CoreState.clearMessage() }) { Text("知道了") }
-            }
-            Spacer(Modifier.height(4.dp))
-        }
-
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(subs.indices.toList()) { index ->
-                SubscriptionCard(
-                    sub = subs[index],
-                    onRefresh = { CoreState.refreshSubscription(ctx, index) },
-                    onDelete = { CoreState.deleteSubscription(ctx, index) }
-                )
-            }
-
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    border = BorderStroke(1.dp, Color(0xFFE0E0E0))
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("添加订阅", style = MaterialTheme.typography.titleSmall)
-                        Spacer(Modifier.height(8.dp))
-                        TextField(
-                            value = subUrl,
-                            onValueChange = { subUrl = it },
-                            label = { Text("订阅链接") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                CoreState.addSubscription(ctx, subUrl)
-                                subUrl = ""
-                            },
-                            enabled = busy == null
-                        ) { Text("添加") }
-                    }
-                }
-            }
-
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    border = BorderStroke(1.dp, Color(0xFFE0E0E0))
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("手动添加节点", style = MaterialTheme.typography.titleSmall)
-                        Spacer(Modifier.height(8.dp))
-                        TextField(
-                            value = manualLink,
-                            onValueChange = { manualLink = it },
-                            label = { Text("粘贴 vless / vmess / trojan / ss / hy2 链接") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                CoreState.addManualNode(ctx, manualLink)
-                                manualLink = ""
-                            }
-                        ) { Text("添加节点") }
-                    }
-                }
-            }
-
-            item {
-                TextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    label = { Text("搜索节点名称") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    for (p in listOf("全部", "vless", "vmess", "trojan", "ss", "hysteria2")) {
-                        val label = if (p == "hysteria2") "HY2" else p.uppercase(Locale.US)
-                        if (protoFilter == p) {
-                            Button(
-                                onClick = {},
-                                colors = ButtonDefaults.buttonColors(containerColor = Teal),
-                                contentPadding = ButtonDefaults.ContentPadding
-                            ) { Text(label, style = MaterialTheme.typography.labelSmall) }
-                        } else {
-                            OutlinedButton(
-                                onClick = { protoFilter = p },
-                                contentPadding = ButtonDefaults.ContentPadding
-                            ) { Text(label, style = MaterialTheme.typography.labelSmall) }
-                        }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Row {
-                    OutlinedButton(onClick = { sortByName = !sortByName }) {
-                        Text(if (sortByName) "排序：名称" else "排序：默认")
-                    }
-                }
-            }
-
-            if (filtered.isEmpty()) {
-                item {
-                    Text(
-                        "没有符合条件的节点",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.Gray
-                    )
-                }
+    }
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = query,
+        onValueChange = { query = it },
+        label = { Text("搜索节点名") },
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (proto in listOf("全部", "vless", "vmess", "trojan", "ss", "hy2")) {
+            if (proto == protoFilter) {
+                Button(onClick = {}) { Text(proto) }
             } else {
-                items(filtered) { node ->
-                    NodeCard(
-                        node = node,
-                        selected = node.tag == selectedTag,
-                        onSelect = { CoreState.selectNode(ctx, node.tag) },
-                        onDeleteManual = if (node.manualIndex >= 0) {
-                            { CoreState.deleteManualNode(ctx, node.manualIndex) }
-                        } else {
-                            null
-                        }
-                    )
-                }
+                OutlinedButton(onClick = { protoFilter = proto }) { Text(proto) }
             }
+        }
+    }
+    Spacer(Modifier.height(12.dp))
+
+    val shown = nodes
+        .filter { protoFilter == "全部" || it.type == protoFilter }
+        .filter { query.isBlank() || it.name.contains(query, ignoreCase = true) }
+        .let { if (sortAsc) it.sortedBy { n -> n.name } else it.sortedByDescending { n -> n.name } }
+
+    LazyColumn(
+        modifier = Modifier.height(420.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(shown, key = { it.tag }) { node ->
+            NodeCard(
+                node = node,
+                selected = node.tag == selectedTag,
+                delay = delays[node.tag],
+                onSelect = { CoreState.selectNode(ctx, node.tag) },
+                onTestDelay = { CoreState.testDelay(node.tag) },
+                onDeleteManual = if (node.manualIndex >= 0) {
+                    { CoreState.deleteManualNode(ctx, node.manualIndex) }
+                } else {
+                    null
+                }
+            )
         }
     }
 }
@@ -560,37 +544,45 @@ private fun NodesScreen() {
 private fun SubscriptionCard(
     sub: SubEntry,
     onRefresh: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    busy: Boolean
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = BorderStroke(1.dp, Color(0xFFE0E0E0))
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(sub.name, style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                sub.url,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.Gray,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            val t = sub.traffic
-            if (t != null && t.total > 0) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(sub.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = onRefresh, enabled = !busy) { Text("更新节点") }
+                TextButton(onClick = onDelete, enabled = !busy) { Text("删除") }
+            }
+            if (sub.traffic != null) {
+                val t = sub.traffic!!
+                val used = t.upload + t.download
+                val frac = if (t.total > 0) (used.toFloat() / t.total.toFloat()).coerceIn(0f, 1f) else 0f
                 Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(
-                    progress = { (t.used.toFloat() / t.total.toFloat()).coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .background(Color.LightGray, RoundedCornerShape(4.dp))
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(frac)
+                            .height(8.dp)
+                            .background(Teal, RoundedCornerShape(4.dp))
+                    )
+                }
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    formatBytes(t.used) + " / " + formatBytes(t.total) +
-                        if (t.expire > 0) " · 到期 " + formatDate(t.expire * 1000) else "",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.Gray
-                )
+                var line = "已用 " + formatBytes(used) + " / 共 " + formatBytes(t.total)
+                if (t.expire > 0) {
+                    val days = (t.expire * 1000 - System.currentTimeMillis()) / 86400000
+                    line += if (days < 0) " · 已过期" else " · 剩余 " + days + " 天"
+                }
+                Text(line, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }
             Spacer(Modifier.height(4.dp))
             Text(
@@ -607,11 +599,6 @@ private fun SubscriptionCard(
                     color = Color.Gray
                 )
             }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onRefresh) { Text("更新节点") }
-                OutlinedButton(onClick = onDelete) { Text("删除") }
-            }
         }
     }
 }
@@ -620,57 +607,155 @@ private fun SubscriptionCard(
 private fun NodeCard(
     node: DisplayNode,
     selected: Boolean,
+    delay: CoreState.DelayInfo?,
     onSelect: () -> Unit,
+    onTestDelay: () -> Unit,
     onDeleteManual: (() -> Unit)?
 ) {
     Card(
-        modifier = Modifier
+        Modifier
             .fillMaxWidth()
             .clickable { onSelect() },
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = BorderStroke(
-            if (selected) 2.dp else 1.dp,
-            if (selected) Teal else Color(0xFFE0E0E0)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            }
         )
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .background(if (selected) Color(0xFF2E7D32) else Color.Gray, CircleShape)
+                    Modifier
+                        .size(8.dp)
+                        .background(if (selected) Teal else Color.Gray, CircleShape)
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
                     node.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f)
                 )
                 if (selected) {
+                    Text("当前", style = MaterialTheme.typography.bodySmall, color = Teal)
+                }
+                if (onDeleteManual != null) {
                     Spacer(Modifier.width(8.dp))
-                    Box(
-                        modifier = Modifier
-                            .background(Teal, RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text("当前", color = Color.White, style = MaterialTheme.typography.labelSmall)
-                    }
+                    TextButton(onClick = onDeleteManual) { Text("删除") }
                 }
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                ProtocolPill(node.type)
+                Box(
+                    Modifier
+                        .background(Teal, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(node.type.uppercase(Locale.US), color = Color.White, style = MaterialTheme.typography.bodySmall)
+                }
                 Spacer(Modifier.width(8.dp))
-                Text(node.transport, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                Spacer(Modifier.width(8.dp))
-                Text(node.source, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                if (onDeleteManual != null) {
-                    Spacer(Modifier.weight(1f))
-                    TextButton(onClick = onDeleteManual) { Text("删除") }
+                Text(
+                    node.transport + " · " + node.source,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray,
+                    modifier = Modifier.weight(1f)
+                )
+                when (delay?.state) {
+                    CoreState.DelayState.TESTING -> CircularProgressIndicator(
+                        Modifier.size(14.dp),
+                        strokeWidth = 2.dp
+                    )
+                    CoreState.DelayState.OK -> Text(
+                        delay.ms.toString() + "ms",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = delayColor(delay.ms),
+                        modifier = Modifier.clickable { onTestDelay() }
+                    )
+                    CoreState.DelayState.FAILED -> Text(
+                        "超时",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray,
+                        modifier = Modifier.clickable { onTestDelay() }
+                    )
+                    else -> Text(
+                        "未测",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray,
+                        modifier = Modifier.clickable { onTestDelay() }
+                    )
                 }
             }
         }
     }
+}
+
+private fun delayColor(ms: Long): Color {
+    return when {
+        ms < 200 -> Green
+        ms < 500 -> Orange
+        else -> Red
+    }
+}
+
+private fun statusLine(
+    status: HubState,
+    node: DisplayNode?,
+    traffic: TrafficPoller.Traffic,
+    connectedSince: Long?,
+    now: Long
+): String {
+    val base = when (status) {
+        HubState.CONNECTED -> "已连接"
+        HubState.CONNECTING -> "连接中…"
+        HubState.IDLE -> "未连接"
+        HubState.FAILED -> "连接失败"
+    }
+    val nodePart = if (node != null) " · " + node.name else ""
+    val connPart = if (status == HubState.CONNECTED) " · " + traffic.count + " 连接" else ""
+    val timePart = if (connectedSince != null) " · 已运行 " + formatDuration(now - connectedSince) else ""
+    return base + nodePart + connPart + timePart
+}
+
+private fun formatRate(bps: Long): String {
+    return when {
+        bps < 1024 -> "$bps B/s"
+        bps < 1024 * 1024 -> String.format(Locale.US, "%.1f KB/s", bps / 1024.0)
+        else -> String.format(Locale.US, "%.2f MB/s", bps / (1024.0 * 1024.0))
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    return when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
+        bytes < 1024 * 1024 * 1024 -> String.format(Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0))
+        else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+private fun formatDuration(ms: Long): String {
+    val s = ms / 1000
+    val h = s / 3600
+    val m = (s % 3600) / 60
+    val sec = s % 60
+    return if (h > 0) {
+        String.format(Locale.US, "%d:%02d:%02d", h, m, sec)
+    } else {
+        String.format(Locale.US, "%02d:%02d", m, sec)
+    }
+}
+
+private fun formatDateTime(ms: Long): String {
+    val cal = java.util.Calendar.getInstance()
+    cal.timeInMillis = ms
+    return String.format(
+        Locale.US,
+        "%02d-%02d %02d:%02d",
+        cal.get(java.util.Calendar.MONTH) + 1,
+        cal.get(java.util.Calendar.DAY_OF_MONTH),
+        cal.get(java.util.Calendar.HOUR_OF_DAY),
+        cal.get(java.util.Calendar.MINUTE)
+    )
 }

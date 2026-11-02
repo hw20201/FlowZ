@@ -39,7 +39,7 @@ object SubscriptionManager {
             conn.readTimeout = timeoutMs
             conn.setRequestProperty(
                 "User-Agent",
-                "FlowZ-Android/0.2 (sing-box)"
+                "FlowZ-Android/0.3 (sing-box)"
             )
             val code = conn.responseCode
             if (code !in 200..299) {
