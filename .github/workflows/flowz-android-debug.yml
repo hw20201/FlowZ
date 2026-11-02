@@ -23,13 +23,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK and platform
+      # NOTE: do NOT use android-actions/setup-android here: its v3 tries to
+      # install the long-obsolete "tools" package and fails the run. The
+      # ubuntu runner already ships an SDK with cmdline-tools; use it directly.
+      - name: Install Android SDK packages
         run: |
           SDKMGR="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKMGR" ]; then SDKMGR="sdkmanager"; fi
+          if [ ! -x "$SDKMGR" ]; then SDKMGR="/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager"; fi
           yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
           "$SDKMGR" "ndk;28.2.13676358" "platforms;android-36" "build-tools;36.0.0"
 
