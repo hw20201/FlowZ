@@ -27,23 +27,25 @@ import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
 
 /**
- * Skeleton VpnService: owns the Android TUN fd and the libbox core.
+ * VpnService: owns the Android TUN fd and the libbox core.
  * It implements both libbox interfaces directly (SFA splits them into
- * BoxService / VPNService / PlatformInterfaceWrapper; the skeleton merges
- * them to keep the first build small).
+ * BoxService / VPNService / PlatformInterfaceWrapper; this app merges
+ * them to keep the first builds small).
  *
- * Known skeleton limitations, fixed in v1:
- * - No foreground notification: the system may reclaim the service in
- *   the background. Reconnect then.
- * - No real interface monitor / neighbor monitor / per-app routing.
- * - localDNSTransport() returns null: the demo config uses remote DNS
- *   only, so the platform transport is never instantiated.
+ * v1: config comes from the user's stored subscriptions / manual nodes
+ * (SelectionStore), node/mode switches reload the core without
+ * restarting the TUN, and TrafficPoller reads the loopback clash API.
+ *
+ * Still missing (later): foreground notification (the system may
+ * reclaim the service in the background), real interface monitor,
+ * per-app routing, local DNS transport (config uses remote DNS only).
  */
 class FlowzVpnService : VpnService(), CommandServerHandler, PlatformInterface {
 
     companion object {
         const val ACTION_START = "com.flowz.android.START"
         const val ACTION_STOP = "com.flowz.android.STOP"
+        const val ACTION_RELOAD = "com.flowz.android.RELOAD"
         private const val TAG = "FlowzVpn"
     }
 
@@ -58,6 +60,10 @@ class FlowzVpnService : VpnService(), CommandServerHandler, PlatformInterface {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_RELOAD -> {
+                reloadCore()
+                return START_STICKY
+            }
             else -> startCore()
         }
         return START_STICKY
@@ -65,6 +71,12 @@ class FlowzVpnService : VpnService(), CommandServerHandler, PlatformInterface {
 
     private fun startCore() {
         CoreState.setStatus(HubState.CONNECTING)
+        val state = SelectionStore.load(this)
+        val nodes = SelectionStore.allNodes(state)
+        if (nodes.isEmpty()) {
+            CoreState.setStatus(HubState.FAILED, "还没有节点，先去节点页添加订阅或手动节点")
+            return
+        }
         try {
             if (!setupDone) {
                 Libbox.setup(
@@ -73,8 +85,8 @@ class FlowzVpnService : VpnService(), CommandServerHandler, PlatformInterface {
                         workingPath = filesDir.resolve("box").absolutePath
                         tempPath = cacheDir.resolve("box").absolutePath
                         fixAndroidStack = true
-                        appVersion = "0.1"
-                        appMarketingVersion = "0.1"
+                        appVersion = "0.2"
+                        appMarketingVersion = "0.2"
                     }
                 )
                 setupDone = true
@@ -84,16 +96,39 @@ class FlowzVpnService : VpnService(), CommandServerHandler, PlatformInterface {
             val server = CommandServer(this, this)
             server.start()
             commandServer = server
-            server.startOrReloadService(ConfigBuilder.demoConfig(), OverrideOptions())
+            server.startOrReloadService(
+                ConfigBuilder.build(nodes, state.selectedTag, state.mode),
+                OverrideOptions()
+            )
             CoreState.setStatus(HubState.CONNECTED)
+            TrafficPoller.start(
+                onTraffic = { CoreState.onTraffic(it) },
+                onTick = { CoreState.onTick(it) }
+            )
         } catch (e: Exception) {
             Log.e(TAG, "start failed", e)
-            CoreState.setStatus(HubState.FAILED, e.message ?: "启动失败")
             stopCore()
+            CoreState.setStatus(HubState.FAILED, e.message ?: "启动失败")
+        }
+    }
+
+    private fun reloadCore() {
+        val server = commandServer ?: return
+        try {
+            val state = SelectionStore.load(this)
+            val nodes = SelectionStore.allNodes(state)
+            if (nodes.isEmpty()) return
+            server.startOrReloadService(
+                ConfigBuilder.build(nodes, state.selectedTag, state.mode),
+                OverrideOptions()
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "reload failed", e)
         }
     }
 
     private fun stopCore() {
+        TrafficPoller.stop()
         try {
             commandServer?.closeService()
         } catch (_: Exception) {
